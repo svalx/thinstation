@@ -13,7 +13,7 @@ Work To Do / Work in Progress: mail to developer List if you can help
 
 New:
 
-- Moved to kernel 4.9.44
+- Moved to kernel 4.14.16
 - Created a Certificate enrollment procedure
 
 ## Installation
