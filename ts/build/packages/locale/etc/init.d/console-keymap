@@ -32,8 +32,6 @@ init)
 				setfont -C /dev/tty$TTY /lib/kbd/consolefonts/$CONSOLE_FONT
 			done
 			echo "Loading console font: $CONSOLE_FONT" >> $LOGFILE
-			setfont /lib/kbd/consolefonts/$CONSOLE_FONT
-			echo "Loading console font: $CONSOLE_FONT" >> $LOGFILE
 		else
 			echo_log "\nNotice!, no console font found"
 			echo_log "Continuing boot with default kernel font"
