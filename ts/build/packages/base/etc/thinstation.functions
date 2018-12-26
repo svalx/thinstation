@@ -389,12 +389,12 @@ header ()
 
 <tr>
 	<a href="../index.html">
-            <img src="../images/ts_logo.jpg" width="650" height="153" border="0" alt="Thinstation logo">
+            <img src="../images/ts_logo.jpg" width="650" height="153" border="0" alt="ThinStation logo">
 	</a>
 </tr>
 
 
-<h2>Thinstation '$(echo $TS_VERSION)' on '$(hostname)' :: '$(basename $0 .cgi)'</h2>
+<h2>ThinStation '$(echo $TS_VERSION)' on '$(hostname)' :: '$(basename $0 .cgi)'</h2>
 <pre>&nbsp;</pre>
 '
 }
@@ -407,47 +407,32 @@ trailer ()
 
 # Verify's Web Password
 
-getpasswd ()
-{
-	local LOGIN=$1
-
-	set +x
-
-	if [ -z "$LOGIN" ]
-	then
-		echo "ERROR: Invalid login" >&2
-		return
-	fi
-
-	sed -n "s/^$LOGIN:\\([^:]*\\):.*/\\1/p" < /etc/passwd
-}
-
 verify_password ()
 {
-	local LOGIN=$1 PASSWD=$2 p s e
+	local LOGIN=$1 PASSWD=$2
 
-	if [ -z "$LOGIN" ]
-	then
-		echo "Null login" >&2
-		return 1
-	fi
+	USERNAME=$1
+	PASSWORD=$2
 
-	if [ -z "$PASSWD" ]
-	then
-		echo "Null password" >&2
-		return 1
-	fi
+	#since we use expect inside a bash-script, we have to escape tcl-$.
+	expect << EOF
+		log_user 0
+		spawn su $USERNAME -c "exit"
+		expect "Password:"
+		send "$PASSWORD\r"
+		#expect eof
 
-	p=$(getpasswd $LOGIN)
-	s=$(echo "$p" | cut -f1-3 -d\$)
-	e=$(/bin/checkpass $PASSWD $s)
+		set wait_result  [wait]
 
-	if [ "$p" = "$e" ]
-	then
-		return 0
-	else
-		return 1
-	fi
+		# check if it is an OS error or a return code from our command
+		#   index 2 should be -1 for OS erro, 0 for command return code
+		if {[lindex \$wait_result 2] == 0} {
+		        exit [lindex \$wait_result 3]
+		}
+		else {
+		        exit 1
+		}
+EOF
 }
 
 
@@ -490,8 +475,9 @@ is_disabled ()
 				return 0
 			fi
 		done
+		return 1
 	fi
-	return 1
+	return 0
 }
 
 screen_res ()
@@ -612,7 +598,7 @@ x_mouse ()
 
 make_res_list ()
 {
-	xrandr 2>/dev/null |grep -o '   [0-9]*x[0-9]*' |sed -r 's/ //g' |sort -u -t'x' -k1n -k2n > /var/run/applications/resolutions
+	xrandr 2>/dev/null |grep -o '   [0-9]*x[0-9]*' |sed -r 's/ //g' |sort -u -t'x' -k1n -k2n > /var/log/applications/resolutions
 }
 
 get_res ()
@@ -646,7 +632,6 @@ dconf_proxy_configure ()
 {
 	if which dconf > /dev/null 2>&1; then
 		# Ignore needs more work
-	set -x
 		if [ -n "$PROXY_IGNORE" ]; then
 			unset hosts
 			IFS=','
@@ -659,7 +644,6 @@ dconf_proxy_configure ()
 
 			dconf write /org/gnome/system/proxy/ignore-hosts "$hosts"
 		fi
-	set +x
 	if [ -n "$PROXY_HOST" ] && [ -n "$PROXY_PORT" ] ; then
 			dconf write /org/gnome/system/proxy/http/host "'$PROXY_HOST'"
 			dconf write /org/gnome/system/proxy/http/port "$PROXY_PORT"

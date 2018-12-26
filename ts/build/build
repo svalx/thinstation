@@ -232,8 +232,10 @@ lib_dependencies()
 		|cut -d: -f1 > liblist.final 2>/dev/null
 		rm filelist
 		while [ -s liblist.final ]; do
-			parallel --record-env
-			cat liblist.final |sort -u|sort -R |parallel --env _ --will-cite calculate_lib_dependencies
+			procs=`nproc`
+			let procs=( procs * 2 )
+			cat liblist.final |sort -u|sort -R | \
+			xargs -n 1 -P $procs -I {} bash -c 'calculate_lib_dependencies "$@"' _ {}
 			rm liblist.final
 			if [ -e liblist.added ]; then
 				mv liblist.added liblist.final
@@ -256,7 +258,7 @@ copy_module()
 	fi
 	if [ ! -e $dest/$1 ]; then
 		mkdir -p $dest
-		cp $src $dest/$1 > /dev/null 2>&1
+		ln $src $dest/$1 > /dev/null 2>&1
 		if [ "$?" == "0" ]; then
 			copied="$dest/$1"
 			return 0
@@ -359,7 +361,7 @@ module_package_dependencies()
 							fi
 						;;
 						firmware)
-							if is_enabled $ts_allfirmware; then
+							if ! is_enabled $ALLMODULES; then
 								if [ -z "`find ./tmp-tree/lib/firmware -name ${name}`" ]; then
 									if ! is_enabled $DISPLAYED; then
 										echo "Adding module dependencies for $module"
@@ -448,6 +450,7 @@ make_initrd()
 	ln -sf / usr/X11R7
 	ln -sf /lib/icons usr/icons
 	ln -sf / usr/local
+	ln -sf /lib usr/lib64
 
 	if [ "$ts_hardlinkfs" == "true" ]; then
 		hardlink -t -m .
@@ -761,7 +764,7 @@ if [ -n "$ts_bootresolution" ] ;then
 	if [ -n "$ts_splash" ] ; then splashvar="splash=$ts_splash" ; fi
 	if [ -n "$ts_boottheme" ] ; then splashvar="$splashvar,theme:$ts_boottheme" ; fi
 	if [ -n "$ts_silenttty" ] ; then splashvar="$splashvar,tty:$ts_silenttty" ; fi
-	KERNEL_PARAMETERS="$KERNEL_PARAMETERS"
+	KERNEL_PARAMETERS="$KERNEL_PARAMETERS $splashvar"
 	echo -e "+ Adding splash boot logo\n"
 	res=${ts_bootresolution%-*}
 	echo $res
@@ -838,13 +841,35 @@ locales()
 allfirm()
 {
 	if is_enabled $ts_allfirmware; then
-		unset firmlist
-		module=`find /lib/modules/$KERNVER -name $1`
-		firmlist=`modinfo -F firmware $module`
+		local fmodule=`find /lib/modules/$KERNVER -name $1`
+		local module=`basename $fmodule`
+		if [ -e /ts/firmware_notfound/$module.oops ]; then
+			WRITE_CACHE=false
+		fi
+		if [ -e /ts/firmware_cache/$module.turbo ]; then
+			if [ -e /ts/firmware_notfound/$module.oops ]; then
+				firmlist=`cat /ts/firmware_cache/$module.turbo |grep -v -f /ts/firmware_notfound/$module.oops`
+			else
+				firmlist=`cat /ts/firmware_cache/$module.turbo`
+			fi
+			WRITE_CACHE=false
+		else
+			firmlist=`modinfo -F firmware $fmodule`
+			WRITE_CACHE=true
+			mkdir -p /ts/firmware_cache
+			mkdir -p /ts/firmware_notfound
+			touch /ts/firmware_cache/$module.turbo
+		fi
 		if [ -n "$firmlist" ]; then
-			echo "Adding extra module firmware for `basename $module`"
+			echo "Adding extra module firmware for $module"
 			for firmware in $firmlist; do
 				copy_firmware `basename $firmware`
+				result=$?
+				if [ "$result" == "0" ] && $WRITE_CACHE; then
+					echo "$firmware" >> /ts/firmware_cache/$module.turbo
+				elif [ "$result" == "2" ] && $WRITE_CACHE; then
+					echo "$firmware" >> /ts/firmware_notfound/$module.oops
+				fi
 			done
 		fi
 	fi
@@ -852,7 +877,6 @@ allfirm()
 
 keymaps()
 {
-#
     for filename in `find $PACDIR -maxdepth 1 -name "keymaps-*"`
     do
 	package=`basename $filename`
@@ -927,12 +951,14 @@ copy_firmware()
 				if [ ! -d ${firmpath%/*} ] ;then
 					mkdir -p ${firmpath%/*}
 				fi
-				cp $firmfile ${firmpath%/*}/.
+				ln $firmfile ${firmpath%/*}/. 2>/dev/null
+				return 0
 			fi
 		done
 	else
 		echo -e "\tNotice, Firmware $1 not found"
 #		echo "$1" >> /missing
+		return 2
 	fi
 }
 
@@ -1097,6 +1123,16 @@ install_non_distributable()
 	done
 }
 
+pre_copy()
+{
+	local module=$1
+	if grep -qe $module /tmp/blacklist.modules; then
+		echo "Skipping $module"
+	elif copy_module $module $KERNVER ./tmp-tree; then
+		allfirm $module
+	fi
+}
+
 # Main TS build script
 main()
 {
@@ -1176,13 +1212,12 @@ for KERNVER in $KERNVERS; do
 				find $gdir -name \*.ko -printf '%f ' >> /tmp/blacklist.modules
 			done
 		done
-		for module in `find /lib/modules/$KERNVER -name \*.ko -printf '%f '`; do
-			if grep -qe $module /tmp/blacklist.modules; then
-				echo "Skipping $module"
-			elif copy_module $module $KERNVER ./tmp-tree; then
-				allfirm $module
-			fi
-		done
+		procs=`nproc`
+		let procs=(procs * 8 )
+		export -f pre_copy copy_module allfirm make_caps copy_firmware
+		export ts_allfirmware KERNVER
+		find /lib/modules/$KERNVER -name \*.ko -printf '%f\n' | \
+		xargs -n 1 -P $procs -I {} bash -c 'pre_copy "$@"' _ {}
 		rm /tmp/blacklist.modules
 	fi
 done
@@ -1191,7 +1226,7 @@ for KERNVER in $KERNVERS; do
 	touch /tmp/dirty
 	while [ -e /tmp/dirty ]; do
 		rm /tmp/dirty
-		if ! is_enabled $ALLMODULES || [ -n "$ts_blacklist$ts_blacklist_grp" ]; then
+		if ! is_enabled $ALLMODULES || [ -n "$ts_blacklist_grp" ]; then
 			# Adding dependent modules via modinfo
 			echo -e "\nBuilding dependencies for $KERNVER Modules..."
 			module_dependencies
@@ -1257,8 +1292,6 @@ rm ./filelist
 # Set Additional Params
 
 if [ -e $PACDIR/tsuser.param ]; then
-    echo "TSUSER=$ts_tsuser" >> ./tmp-tree/etc/thinstation.defaults
-#    echo "HOME=/home/$ts_tsuser" >> ./tmp-tree/etc/thinstation.env
 	if [  -e $PACDIR/tsuserpasswd.param ]; then
 		if [ "$ts_tsuserpasswd" == "!!" ]; then
 			GETPASSWD="!!"
@@ -1270,18 +1303,27 @@ if [ -e $PACDIR/tsuser.param ]; then
 	fi
     echo "$ts_tsuser:$GETPASSWD:1000:1000:$ts_tsuser:/home/$ts_tsuser:/bin/sh" >> ./tmp-tree/etc/passwd
     echo "$ts_tsuser:!:1000:" >> ./tmp-tree/etc/group
-    sed -i -e "s/tsuser/$ts_tsuser/g" ./tmp-tree/etc/group
-    sed -i -e "s/\-a root/\-a $ts_tsuser/g" ./tmp-tree/etc/inittab
-    sed -i -e "s/\-a root/\-a $ts_tsuser/g" ./tmp-tree/lib/systemd/system/display-manager.service
-    if [ -e ./tmp-tree/etc/pam.d/login ]; then
-      sed -i -e "s/user = root/user = $ts_tsuser/g" ./tmp-tree/etc/pam.d/login
-    fi
 else
-#    echo "HOME=/root" >> ./tmp-tree/etc/thinstation.env
-    echo "TSUSER=root" >> ./tmp-tree/etc/thinstation.env
+	ts_tsuser=root
 fi
+echo "TSUSER=$ts_tsuser" >> ./tmp-tree/etc/thinstation.env
 
 echo -e "Setting Passwords"
+
+if [  -e $PACDIR/tsadminpasswd.param ]; then
+    if [ "$ts_tsadminpasswd" == "!!" ]; then
+        GETPASSWD="!!"
+    elif is_enabled $ts_sha512passwd; then
+        GETPASSWD=`python -c "import crypt; import string; import random; print crypt.crypt('$ts_tsadminpasswd', '\\\$6\\\$'+''.join(random.SystemRandom().choice(string.ascii_letters + string.digits + '/.') for _ in range(16)))"`
+    else
+        GETPASSWD=`mkpasswd -m md5 $ts_tsadminpasswd`
+    fi
+    cp ./tmp-tree/etc/passwd ./tmp-tree/etc/passwd.tmp
+    echo "tsadmin:$GETPASSWD:42:42:tsadmin:/home/tsadmin:/bin/sh" >./tmp-tree/etc/passwd
+    cat ./tmp-tree/etc/passwd.tmp | grep -v "tsadmin" >> ./tmp-tree/etc/passwd
+    rm ./tmp-tree/etc/passwd.tmp
+    echo "tsadmin:!:42:" >> ./tmp-tree/etc/group
+fi
 
 if [  -e $PACDIR/rootpasswd.param ]; then
     if [ "$ts_rootpasswd" == "!!" ]; then
@@ -1473,13 +1515,14 @@ if [ -e $PACDIR/www.* ]; then
 	if [ ! -d $WEBDIR ] ; then 
 		mkdir -p $WEBDIR
 	fi
-  cat ./thinstation.conf.sample |grep "\-\-\-" |cut -d" " -f3- |sed -e s/Options//g  |sed -e s/\
-//g >$WEBDIR/headings
-  (cat $WEBDIR/headings) |
-  while read heading
-  do
-	awk "/--- $heading/,/##/" ./thinstation.conf.sample  > "$WEBDIR/$heading.sample"
-  done
+  cat -v ./thinstation.conf.sample | \
+	grep "\-\-\-" | \
+	cut -d" " -f3- | \
+	sed -e s/Options//g  | \
+	busybox dos2unix | \
+  	while read heading; do
+		awk "/--- $heading/,/##/" ./thinstation.conf.sample  > "$WEBDIR/$heading.sample"
+	done
 fi
 
 
@@ -1613,36 +1656,29 @@ filesystem_fixups()
         fi
 	echo -e "\tRemoving Extra Files"
 	find ./tmp-tree -name .gitignore -delete
-	if [ ! -e ./tmp-tree/lib/thinstation/system/audio ]; then
-		for sound in `find ./tmp-tree/lib/modules -type d -name sound`; do
-			rm -rf $sound
-		done
-	fi
-	if [ -z "`find ./tmp-tree/lib/modules -name udf.ko -o -name isofs.ko`" ]; then
-		for cdrom in `find ./tmp-tree/lib/modules -type d -name cdrom`; do
-			rm -rf $cdrom
-		done
-	fi
-	for KERNVER in $KERNVERS; do
-		if [ ! -e ./tmp-tree/lib/modules/$KERNVER/kernel/fs ]; then
-			for driver in `find ./tmp-tree/lib/modules/$KERNVER -type d -name scsi -o -name ata -o -name fusion`; do
-				rm -rf $driver
-			done
-		fi
-	done
-	if [ ! -d ./tmp-tree/etc/X11 ] ;then
+#	if [ ! -e ./tmp-tree/etc/init.d/audio ]; then
+#		for sound in `find ./tmp-tree/lib/modules -type d -name sound`; do
+#			rm -rf $sound
+#		done
+#	fi
+#	if [ -z "`find ./tmp-tree/lib/modules -name udf.ko -o -name isofs.ko`" ]; then
+#		for cdrom in `find ./tmp-tree/lib/modules -type d -name cdrom`; do
+#			rm -rf $cdrom
+#		done
+#	fi
+#	for KERNVER in $KERNVERS; do
+#		if [ ! -e ./tmp-tree/lib/modules/$KERNVER/kernel/fs ]; then
+#			for driver in `find ./tmp-tree/lib/modules/$KERNVER -type d -name scsi -o -name ata -o -name fusion`; do
+#				rm -rf $driver
+#			done
+#		fi
+#	done
+	if [ ! -e ./tmp-tree/etc/xserverrc ] ;then
 		echo -e "\tRemoving Extra Font Files"
 		rm -rf ./tmp-tree/lib/fonts/X11
 		rm -rf ./tmp-tree/lib/X11
 		rm -rf ./tmp-tree/lib/keymaps
 		rm -f ./tmp-tree/etc/background.jpg
-		rm -f ./tmp-tree/bin/vmmouse_detect
-		# If we are not starting X, why do we need gpu support.
-		if is_enabled $ts_stripmodules; then
-			for gpu in `find ./tmp-tree/lib/modules -type d -name gpu -o -name agp`; do
-				rm -rf $gpu
-			done
-		fi
 	else
 		echo -e "\tRunning mkfontdir and mkfontscale"
 		for fontdir in `find ./tmp-tree/lib/fonts/X11 -mindepth 1 -type d`; do
@@ -1687,7 +1723,7 @@ filesystem_fixups()
 			echo -e "\tCompiling Schemas"
 			cp -H `which glib-compile-schemas` ./tmp-tree/bin/.
 			chroot ./tmp-tree /bin/glib-compile-schemas /lib/glib-2.0/schemas 2>/dev/null
-			rm ./tmp-tree/bin/glib-compile-schemas
+#			rm ./tmp-tree/bin/glib-compile-schemas
 			gio-querymodules ./tmp-tree/lib/gio/modules
 		fi
 	fi
@@ -1821,10 +1857,8 @@ else
 fi
 
 if [ -z "$KERNVEROPT" ]; then
-	if [ -e ./SMP ]; then
-		KERNVEROPT=SMP
-	elif [ -e ./64 ]; then
-                KERNVEROPT=64
+	if [ -e ./CON ]; then
+		KERNVEROPT=+con
 	else
 		KERNVEROPT=`cat /boot/KERNEL_VERSION`
 	fi
@@ -1836,7 +1870,11 @@ for KERNVER in $KERNVEROPT; do
 	fi
 
 	# If a specific Kernel version is specified - use it
-	KERNVER_SHORT=`cat /boot/KERNEL_VERSION |sed -e 's/TS/TS_'$KERNVER'/g'`
+	if echo $KERNVER |grep -qe "^+"; then
+		KERNVER_SHORT=`cat /boot/KERNEL_VERSION |sed -e 's/TS/TS'$KERNVER'/g'`
+	else
+		KERNVER_SHORT=`cat /boot/KERNEL_VERSION |sed -e 's/TS/TS_'$KERNVER'/g'`
+	fi
 	if [ -n "$KERNVER" ]; then
 		if [ ! -e /lib/modules/$KERNVER ] && [ ! -e /lib/modules/$KERNVER_SHORT ]; then
 			echo "Kernel $KERNVER doesn't exist, ERROR!!"
@@ -2274,7 +2312,7 @@ if [ -z "$NOIMAGES" ]; then
 
 				add_image
 				add_overlay
-				sys_copy `prt-get fsearch index.cgi |grep -v Found |cut -d " " -f3` $ESP/cgi-bin/index.cgi
+#				sys_copy `prt-get fsearch index.cgi |grep -v Found |cut -d " " -f3` $ESP/cgi-bin/index.cgi
 			;;
 			iso)
 				ESP=boot-images/iso/source

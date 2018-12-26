@@ -35,4 +35,3 @@ chgrp systemd-journal /var/log/journal/
 chmod g+s /var/log/journal/
 
 systemd-machine-id-setup
-

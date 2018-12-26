@@ -1,4 +1,4 @@
 #!/bin/bash
 
 cd /build
-./build --savedir --autodl
+time ./build --savedir --autodl --kernel +con --license ACCEPT $@ 2>&1 | tee /build.log

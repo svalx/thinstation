@@ -1,4 +1,4 @@
-#60f99770b67b14d243d57a7319d2d0ce  .dna
+#1dec2ea01c10273ea776c43b58fb358e  .dna
 rm /ts/build/packages/base/bin/busybox
 rm /ts/build/packages/base/bin/dd
 rm /ts/build/packages/base/sbin/lspci
@@ -6,6 +6,8 @@ rm /ts/build/packages/base/sbin/v86d
 rm /ts/build/packages/base/sbin/agetty
 rm /ts/build/packages/base/lib/libgcc_s.so.1
 rm /ts/build/packages/base/lib/security/pam_nologin.so
+rm /ts/build/packages/base/lib/security/pam_limits.so
+rm /ts/build/packages/base/lib/security/pam_keyinit.so
 rm /ts/build/packages/base/lib/security/pam_rootok.so
 rm /ts/build/packages/base/lib/security/pam_deny.so
 rm /ts/build/packages/base/lib/security/pam_succeed_if.so
@@ -19,6 +21,7 @@ rm /ts/build/packages/base/lib/security/pam_tally.so
 rm /ts/build/packages/base/lib/security/pam_securetty.so
 rm /ts/build/packages/base/lib/security/pam_warn.so
 rm /ts/build/packages/base/lib/security/pam_access.so
+rm /ts/build/packages/base/lib/security/pam_hooks.so
 rm /ts/build/packages/base/etc/gcrypt/fips_enabled
 rm /ts/build/packages/base/etc/login.defs
 rm /ts/build/packages/base/etc/inputrc
@@ -27,4 +30,5 @@ rm /ts/build/packages/base/etc/skel/.Xauthority
 rm /ts/build/packages/base/etc/security/pam_env.conf
 rm /ts/build/packages/base/etc/security/access.conf
 rm /ts/build/packages/base/etc/environment
+rm /ts/build/packages/base/bin/seq
 
